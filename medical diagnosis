@@ -1,0 +1,61 @@
+pip install biopython transformers langchain langchain-community faiss-cpu sentence-transformers
+
+from Bio import Entrez
+from transformers import pipeline
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.vectorstores import FAISS
+from langchain.embeddings import HuggingFaceEmbeddings
+
+Entrez.email = "your_email@example.com"  # Put any valid email (NCBI requires this)
+
+def search_pubmed(query, max_results=10):
+    handle = Entrez.esearch(db="pubmed", term=query, retmax=max_results)
+    record = Entrez.read(handle)
+    return record["IdList"]
+
+def fetch_abstracts(id_list):
+    handle = Entrez.efetch(db="pubmed", id=",".join(id_list), rettype="abstract", retmode="text")
+    raw = handle.read()
+    return [abs.strip() for abs in raw.split("\n\n") if abs.strip()]
+
+def split_and_embed(texts):
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    chunks = []
+    for text in texts:
+        chunks.extend(splitter.split_text(text))
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    return FAISS.from_texts(chunks, embedding=embeddings)
+
+def get_relevant_chunks(vectorstore, query, k=4):
+    retriever = vectorstore.as_retriever(search_kwargs={"k": k})
+    docs = retriever.get_relevant_documents(query)
+    return " ".join([doc.page_content for doc in docs])
+
+def summarize(text):
+    summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+    output = summarizer(text, max_length=200, min_length=50, do_sample=False)
+    return output[0]['summary_text']
+
+def diagnose(query):
+    print("[1] Searching PubMed...")
+    ids = search_pubmed(query)
+    if not ids:
+        return "No PubMed articles found for this query."
+
+    print("[2] Fetching abstracts...")
+    abstracts = fetch_abstracts(ids)
+
+    print("[3] Building vector store...")
+    vectorstore = split_and_embed(abstracts)
+
+    print("[4] Retrieving most relevant content...")
+    context = get_relevant_chunks(vectorstore, query)
+
+    print("[5] Summarizing...")
+    return summarize(context)
+
+if __name__ == "__main__":
+    user_input = input("🔍 Enter symptoms or a medical question: ").strip()
+    result = diagnose(user_input)
+    print("\n📌 Diagnosis Insight:\n")
+    print(result)
